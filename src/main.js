@@ -1,6 +1,6 @@
 import './style.css'
 import * as THREE from 'three'
-import { Body, HelioVector, MakeTime } from 'astronomy-engine'
+import { Body, HelioVector, GeoVector, MakeTime } from 'astronomy-engine'
 
 // --- App shell ---
 document.querySelector('#app').innerHTML = `
@@ -141,11 +141,13 @@ const bodies = [
   { key: 'Mercury', body: Body.Mercury, color: 0xbab3a6, size: 3.2, desc: 'Small, fast, cratered.' },
   { key: 'Venus', body: Body.Venus, color: 0xe6c48c, size: 6.2, desc: 'Thick atmosphere, hottest surface.' },
   { key: 'Earth', body: Body.Earth, color: 0x4fa3ff, size: 6.4, desc: 'Home. 1 AU baseline.' },
+  { key: 'Moon', body: Body.Moon, color: 0xd9d9d9, size: 1.8, desc: 'Earth\'s moon (geocentric → heliocentric).' },
   { key: 'Mars', body: Body.Mars, color: 0xe36a3b, size: 4.2, desc: 'Red planet, thin atmosphere.' },
   { key: 'Jupiter', body: Body.Jupiter, color: 0xd9b38c, size: 14.0, desc: 'Gas giant, many moons.' },
   { key: 'Saturn', body: Body.Saturn, color: 0xf2d39c, size: 12.0, desc: 'Rings, low density.' },
   { key: 'Uranus', body: Body.Uranus, color: 0x8fe7ff, size: 9.5, desc: 'Ice giant, extreme tilt.' },
   { key: 'Neptune', body: Body.Neptune, color: 0x3a6bff, size: 9.2, desc: 'Ice giant, strong winds.' },
+  { key: 'Pluto', body: Body.Pluto, color: 0xbfa58f, size: 2.4, desc: 'Dwarf planet in the Kuiper belt.' },
 ]
 
 const orbitLines = []
@@ -166,6 +168,50 @@ const trails = new Map() // key -> line
   sun.name = 'Sun'
   scene.add(sun)
 }
+
+// Asteroid belt + Kuiper belt (stylized particle rings)
+function makeBelt({ name, innerAU, outerAU, count, color, yJitterAU = 0.03, size = 1.0, opacity = 0.22 }) {
+  const geo = new THREE.BufferGeometry()
+  const positions = new Float32Array(count * 3)
+  for (let i = 0; i < count; i++) {
+    const r = innerAU + Math.random() * (outerAU - innerAU)
+    const a = Math.random() * Math.PI * 2
+    const y = (Math.random() - 0.5) * yJitterAU
+    const x = r * Math.cos(a)
+    const z = r * Math.sin(a)
+    // note axis swap used elsewhere: (x, z, y)
+    positions[i * 3 + 0] = x * AU_TO_UNITS
+    positions[i * 3 + 1] = z * AU_TO_UNITS
+    positions[i * 3 + 2] = y * AU_TO_UNITS
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  const mat = new THREE.PointsMaterial({ color, size, sizeAttenuation: true, transparent: true, opacity })
+  const pts = new THREE.Points(geo, mat)
+  pts.name = name
+  return pts
+}
+
+scene.add(makeBelt({
+  name: 'AsteroidBelt',
+  innerAU: 2.1,
+  outerAU: 3.3,
+  count: 8000,
+  color: 0x93a3b7,
+  yJitterAU: 0.05,
+  size: 1.1,
+  opacity: 0.18,
+}))
+
+scene.add(makeBelt({
+  name: 'KuiperBelt',
+  innerAU: 30,
+  outerAU: 50,
+  count: 14000,
+  color: 0x6f88c9,
+  yJitterAU: 0.3,
+  size: 1.2,
+  opacity: 0.10,
+}))
 
 function makePlanetMesh(p) {
   const geo = new THREE.SphereGeometry(p.size, 24, 24)
@@ -188,7 +234,20 @@ function makeOrbitLine(points) {
 }
 
 function computeHelioPos(body, time) {
-  // returns in AU, J2000 ecliptic-ish coordinates from Astronomy Engine
+  // returns in AU, J2000-ish coordinates from Astronomy Engine
+  // Special cases:
+  // - Moon: library gives a geocentric vector, so we add Earth's heliocentric vector.
+  if (body === Body.Moon) {
+    const earth = HelioVector(Body.Earth, time)
+    const moonGeo = GeoVector(Body.Moon, time, true) // true = aberration correction
+    const v = {
+      x: earth.x + moonGeo.x,
+      y: earth.y + moonGeo.y,
+      z: earth.z + moonGeo.z,
+    }
+    return new THREE.Vector3(v.x, v.z, v.y)
+  }
+
   const v = HelioVector(body, time)
   return new THREE.Vector3(v.x, v.z, v.y) // swap axes for nicer orientation
 }
@@ -200,6 +259,7 @@ function buildOrbits(time) {
 
   const samples = 360
   for (const p of bodies) {
+    if (p.body === Body.Moon) continue // moon orbit is around Earth; keep orbit lines heliocentric
     const pts = []
     // sample across ~1 sidereal year for inner planets isn't perfect, but looks right.
     // We'll sample +/- 365 days around current time.
